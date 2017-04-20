@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+echo "Running cache test..."
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+BUILD_PACK_DIR=$(dirname $(dirname $0))
+
+export BUILD_DIR
+export CACHE_DIR
+
+curl -o $BUILD_DIR/mongo.tgz https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu1404-3.4.3.tgz
+
+cd $BUILD_DIR
+pwd
+
+tar xvf mongo.tgz
+rm -f mongo.tgz
+
+rm -f mongodb-linux-x86_64-ubuntu1404-3.4.3/bin/mongo??*
+rm -f mongodb-linux-x86_64-ubuntu1404-3.4.3/bin/mongos
+rm -f mongodb-linux-x86_64-ubuntu1404-3.4.3/bin/[^m]*
+
+mkdir -p mongodb-linux-x86_64-ubuntu1404-3.4.3/mongodb-data
+
+find mongodb-linux-x86_64-ubuntu1404-3.4.3 -ls
+
+echo "Creating script to start a small Python Web server"
+cat > "$BUILD_DIR/boot.py" <<EOF
+#!/usr/bin/env python
+#
+# Simple HTTP Server for accessing files in target director
+#
+import SimpleHTTPServer
+import SocketServer
+import os
+import sys
+
+fin = open('/proc/cpuinfo', 'rt')
+fout = open('cpuinfo', 'wt')
+fout.write(fin.read())
+fin.close()
+fout.close()
+
+if len(sys.argv) == 2:
+    print 'Serving files from [%s]' % sys.argv[1]
+    os.chdir(sys.argv[1])
+else:
+    print 'Service files from [%s]' % os.getcwd()
+
+httpd = SocketServer.TCPServer(
+    (os.environ.get('VCAP_APP_HOST', 'localhost'),
+     int(os.environ.get('VCAP_APP_PORT', 8080))),
+    SimpleHTTPServer.SimpleHTTPRequestHandler)
+httpd.serve_forever()
+EOF
+
+echo "==================================="
+echo "Creating start script into $BUILD_DIR/start.sh"
+
+cat > "$BUILD_DIR/start.sh" <<EOF
+#!/bin/bash
+
+mkdir -p /home/vcap/dbg
+
+env | sort > /home/vcap/dbg/env.txt
+
+ps -ef > /home/vcap/dbg/ps-init.txt
+
+#
+# Start mongodb server
+#
+
+exec > /home/vcap/dbg/script.txt 2>&1
+
+
+find /home/vcap -ls | sort -k 11
+echo "==============================================================================="
+
+find /var/tmp -ls | sort -k 11
+echo "==============================================================================="
+
+cd /home/vcap/app/mongodb-linux-x86_64-ubuntu1404-3.4.3
+pwd
+echo "==============================================================================="
+
+find mongodb-data
+echo "==============================================================================="
+
+MONGODB_PORT=27017
+#MONGODB_PORT=\$VCAP_APP_PORT
+
+echo Mongo apps will use port \$MONGODB_PORT
+echo "==============================================================================="
+
+find bin | xargs file
+echo "==============================================================================="
+
+echo show dbs | bin/mongo --port \$MONGODB_PORT
+
+if [ \$? -ne 0 ]; then
+   echo cannot launch mongo
+fi
+echo "==============================================================================="
+
+echo "Starting Mongo Server"
+
+if [ \$MONGODB_PORT -ne \$VCAP_APP_PORT ]; then
+	bin/mongod --dbpath mongodb-data --port \$MONGODB_PORT &
+else
+	bin/mongod --dbpath mongodb-data --port \$MONGODB_PORT
+fi
+
+if [ \$? -ne 0 ]; then
+   echo cannot launch mongod on port \$MONGODB_PORT 
+fi
+
+sleep 5
+echo "==============================================================================="
+
+find mongodb-data
+echo "==============================================================================="
+
+echo show dbs | bin/mongo --port \$MONGODB_PORT
+
+if [ \$? -ne 0 ]; then
+   echo cannot launch mongo
+fi
+echo "==============================================================================="
+
+
+#
+# Start Python Web Server
+#
+
+ps -ef > /home/vcap/dbg/ps-mid.txt
+netstat -a > /home/vcap/dbg/netstat.txt
+
+# Start Python Server
+if [ \$MONGODB_PORT -ne \$VCAP_APP_PORT ]; then
+	echo "Starting Web Server"
+	python /home/vcap/app/boot.py /
+fi
+
+echo Python server has been launched
+ps -ef > /home/vcap/dbg/ps-final.txt
+
+EOF
+chmod 755 "$BUILD_DIR/start.sh"
+
+sleep 5
+
+echo "==================================="
+cat "$BUILD_DIR/start.sh"
+
+echo "Leaving"
+
